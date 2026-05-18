@@ -772,7 +772,8 @@ if __name__ == '__main__':
         print("-" * 50)
         print("🌐 Open http://127.0.0.1:5000 in your browser")
         print("=" * 50)
-        app.run(debug=False, threaded=False, use_reloader=False)
+        # threaded=True: /video_feed blocks; without threads Start Workout cannot reach the server
+        app.run(debug=False, threaded=True, use_reloader=False)
     except Exception as e:
         logger.error(f"Failed to start application: {e}")
         traceback.print_exc()

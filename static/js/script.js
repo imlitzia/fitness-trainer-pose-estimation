@@ -204,6 +204,8 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Start workout
     startBtn.addEventListener('click', function() {
+        if (startBtn.disabled) return;
+
         if (!selectedExercise) {
             alert('Please select an exercise first!');
             return;
@@ -216,11 +218,10 @@ document.addEventListener('DOMContentLoaded', function() {
             alert('Please enter valid numbers for sets and repetitions.');
             return;
         }
+
+        startBtn.disabled = true;
         
-        // Start camera first if not started
-        startCamera();
-        
-        // Start the exercise via API
+        // Start exercise before camera: /video_feed blocks the server until threaded requests can run
         fetch('/start_exercise', {
             method: 'POST',
             headers: {
@@ -236,8 +237,9 @@ document.addEventListener('DOMContentLoaded', function() {
         .then(data => {
             if (data.success) {
                 workoutRunning = true;
-                startBtn.disabled = true;
                 stopBtn.disabled = false;
+
+                startCamera();
                 
                 // Update UI
                 const details = exerciseDetails[selectedExercise] || { name: selectedExercise };
@@ -251,11 +253,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Start status polling
                 statusCheckInterval = setInterval(checkStatus, 500);
             } else {
+                startBtn.disabled = false;
                 alert('Failed to start exercise: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
             console.error('Error:', error);
+            startBtn.disabled = false;
             alert('An error occurred while starting the exercise.');
         });
     });
