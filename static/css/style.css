@@ -61,6 +61,59 @@ header p {
     gap: 20px;
 }
 
+.camera-panels {
+    display: flex;
+    flex: 1 1 100%;
+    gap: 16px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.camera-panels .video-container {
+    flex: 1 1 320px;
+    min-width: 280px;
+}
+
+.panel-title {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    z-index: 2;
+    color: white;
+    font-size: 0.85rem;
+    font-weight: 600;
+    background: rgba(0, 0, 0, 0.45);
+    padding: 4px 10px;
+    border-radius: 12px;
+}
+
+.face-panel {
+    border: 2px solid rgba(155, 89, 182, 0.35);
+}
+
+.face-panel .video-placeholder {
+    background: linear-gradient(145deg, #2d1b4e, #1a1a2e);
+}
+
+.placeholder-hint {
+    font-size: 0.8rem;
+    color: #aaa;
+    margin-top: 6px;
+}
+
+.facial-status {
+    border-top: 3px solid #9b59b6;
+}
+
+.facial-fatigue-score.level-fresh,
+.facial-fatigue-level.level-fresh { color: #27ae60; }
+.facial-fatigue-score.level-moderate,
+.facial-fatigue-level.level-moderate { color: #f39c12; }
+.facial-fatigue-score.level-high,
+.facial-fatigue-level.level-high { color: #e67e22; }
+.facial-fatigue-score.level-critical,
+.facial-fatigue-level.level-critical { color: #e74c3c; }
+
 .video-container {
     flex: 1 1 600px;
     border-radius: 10px;
@@ -256,6 +309,66 @@ header p {
 .status-value {
     font-weight: 700;
     color: #3498db;
+}
+
+.fatigue-score.level-fresh,
+.fatigue-level.level-fresh { color: #27ae60; }
+.fatigue-score.level-warming_up,
+.fatigue-level.level-warming_up { color: #7f8c8d; }
+.fatigue-score.level-moderate,
+.fatigue-level.level-moderate { color: #f39c12; }
+.fatigue-score.level-high,
+.fatigue-level.level-high { color: #e67e22; }
+.fatigue-score.level-critical,
+.fatigue-level.level-critical { color: #e74c3c; }
+
+.fatigue-signals {
+    margin-top: 12px;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.85rem;
+}
+
+.fatigue-signal {
+    display: flex;
+    justify-content: space-between;
+    color: #555;
+}
+
+.fatigue-signal span:last-child {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.fatigue-messages {
+    margin-top: 10px;
+}
+
+.fatigue-msg {
+    font-size: 0.85rem;
+    color: #c0392b;
+    background: #fdecea;
+    padding: 8px 10px;
+    border-radius: 5px;
+    margin-bottom: 6px;
+    border-left: 3px solid #e74c3c;
+}
+
+.fatigue-msg.facial-msg {
+    color: #6c3483;
+    background: #f4ecf7;
+    border-left-color: #9b59b6;
+}
+
+.face-panel img {
+    width: 100%;
+    height: auto;
+    display: block;
+    object-fit: cover;
 }
 
 /* Category Tabs */

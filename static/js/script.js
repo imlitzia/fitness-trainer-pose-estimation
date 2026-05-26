@@ -17,11 +17,30 @@ document.addEventListener('DOMContentLoaded', function() {
     const currentReps = document.getElementById('current-reps');
     const formScore = document.getElementById('form-score');
     const formGrade = document.getElementById('form-grade');
+    const fatigueScore = document.getElementById('fatigue-score');
+    const fatigueLevel = document.getElementById('fatigue-level');
+    const fatigueSignals = document.getElementById('fatigue-signals');
+    const fatigueMessages = document.getElementById('fatigue-messages');
+    const sigVelocity = document.getElementById('sig-velocity');
+    const sigRom = document.getElementById('sig-rom');
+    const sigShakiness = document.getElementById('sig-shakiness');
+    const sigPause = document.getElementById('sig-pause');
     
     // Camera elements
     const videoElement = document.getElementById('video');
     const videoPlaceholder = document.getElementById('video-placeholder');
+    const faceVideoElement = document.getElementById('face-video');
+    const facePlaceholder = document.getElementById('face-placeholder');
     const startCameraBtn = document.getElementById('start-camera-btn');
+    const facialFatigueScore = document.getElementById('facial-fatigue-score');
+    const facialFatigueLevel = document.getElementById('facial-fatigue-level');
+    const faceTracking = document.getElementById('face-tracking');
+    const facialSignals = document.getElementById('facial-signals');
+    const facialMessages = document.getElementById('facial-messages');
+    const sigEar = document.getElementById('sig-ear');
+    const sigMouth = document.getElementById('sig-mouth');
+    const sigBlink = document.getElementById('sig-blink');
+    const sigHead = document.getElementById('sig-head');
     
     // Camera state
     let cameraStarted = false;
@@ -31,31 +50,124 @@ document.addEventListener('DOMContentLoaded', function() {
     let exercisesData = {};
     let workoutRunning = false;
     let statusCheckInterval = null;
+    let faceStatusInterval = null;
     let currentCategory = 'all';
     
     // ==================== Camera Control Functions ====================
-    function startCamera() {
-        if (cameraStarted) return;
-        
-        console.log('Starting camera...');
-        videoElement.src = '/video_feed';
+    function showCameraError(message) {
+        const text = message || 'Could not start camera.';
+        if (videoPlaceholder) {
+            videoPlaceholder.style.display = 'flex';
+            const hint = videoPlaceholder.querySelector('.camera-error-hint');
+            if (hint) {
+                hint.textContent = text;
+            } else {
+                const p = document.createElement('p');
+                p.className = 'camera-error-hint';
+                p.style.color = '#ffb4b4';
+                p.textContent = text;
+                videoPlaceholder.querySelector('.placeholder-content')?.appendChild(p);
+            }
+        }
+        if (facePlaceholder) {
+            facePlaceholder.style.display = 'flex';
+        }
+        if (videoElement) {
+            videoElement.style.display = 'none';
+            videoElement.removeAttribute('src');
+        }
+        if (faceVideoElement) {
+            faceVideoElement.style.display = 'none';
+            faceVideoElement.removeAttribute('src');
+        }
+        cameraStarted = false;
+    }
+
+    function beginVideoStreams() {
+        const ts = Date.now();
+        videoElement.src = `/video_feed?ts=${ts}`;
         videoElement.style.display = 'block';
         if (videoPlaceholder) {
             videoPlaceholder.style.display = 'none';
         }
-        cameraStarted = true;
+        setTimeout(() => {
+            if (!cameraStarted || !faceVideoElement) return;
+            faceVideoElement.src = `/face_feed?ts=${ts}`;
+            faceVideoElement.style.display = 'block';
+            if (facePlaceholder) {
+                facePlaceholder.style.display = 'none';
+            }
+        }, 800);
+    }
+
+    async function startCamera() {
+        if (cameraStarted) return;
+
+        if (startCameraBtn) {
+            startCameraBtn.disabled = true;
+            startCameraBtn.textContent = 'Starting...';
+        }
+
+        try {
+            const res = await fetch('/start_camera', { method: 'POST' });
+            const data = await res.json();
+            if (!data.success) {
+                showCameraError(data.error || 'Camera failed to open.');
+                return;
+            }
+
+            const errHint = videoPlaceholder?.querySelector('.camera-error-hint');
+            if (errHint) errHint.remove();
+
+            console.log('Starting camera streams...');
+            cameraStarted = true;
+            beginVideoStreams();
+
+            if (!faceStatusInterval) {
+                faceStatusInterval = setInterval(() => {
+                    fetch('/get_status')
+                        .then(r => r.json())
+                        .then(statusData => {
+                            if (statusData.facial_fatigue_score !== undefined || statusData.face_tracking !== undefined) {
+                                updateFacialFatigueDisplay(statusData);
+                            }
+                        })
+                        .catch(() => {});
+                }, 600);
+            }
+        } catch (err) {
+            console.error(err);
+            showCameraError('Server not reachable. Is python app.py running?');
+        } finally {
+            if (startCameraBtn) {
+                startCameraBtn.disabled = false;
+                startCameraBtn.textContent = 'Start Cameras';
+            }
+        }
     }
     
     function stopCamera() {
         if (!cameraStarted) return;
         
-        console.log('Stopping camera...');
+        console.log('Stopping cameras...');
         videoElement.src = '';
         videoElement.style.display = 'none';
         if (videoPlaceholder) {
             videoPlaceholder.style.display = 'flex';
         }
+        if (faceVideoElement) {
+            faceVideoElement.src = '';
+            faceVideoElement.style.display = 'none';
+        }
+        if (facePlaceholder) {
+            facePlaceholder.style.display = 'flex';
+        }
         cameraStarted = false;
+        if (faceStatusInterval) {
+            clearInterval(faceStatusInterval);
+            faceStatusInterval = null;
+        }
+        resetFacialUI();
         
         // Notify server to release camera
         fetch('/stop_camera', { method: 'POST' }).catch(() => {});
@@ -66,15 +178,25 @@ document.addEventListener('DOMContentLoaded', function() {
         startCameraBtn.addEventListener('click', startCamera);
     }
     
-    // Stop camera when leaving page
-    window.addEventListener('beforeunload', stopCamera);
-    
-    // Also stop camera when clicking navigation links
+    // Stop camera when navigating away (not on refresh — avoids release/init race)
     document.querySelectorAll('.nav-link').forEach(link => {
-        link.addEventListener('click', function(e) {
+        link.addEventListener('click', function() {
             stopCamera();
         });
     });
+
+    if (videoElement) {
+        videoElement.addEventListener('error', () => {
+            if (cameraStarted) {
+                showCameraError('Body camera stream failed. Retry Start Cameras.');
+            }
+        });
+    }
+    if (faceVideoElement) {
+        faceVideoElement.addEventListener('error', () => {
+            console.warn('Face stream error (body stream may still work)');
+        });
+    }
     
     // Exercise categories mapping
     const exerciseCategories = {
@@ -249,6 +371,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 formScore.textContent = '100';
                 formGrade.textContent = 'A';
                 formGrade.className = 'status-value form-grade grade-a';
+                updateFatigueDisplay({ fatigue_score: 100, fatigue_level: 'warming_up' });
                 
                 // Start status polling
                 statusCheckInterval = setInterval(checkStatus, 500);
@@ -305,12 +428,105 @@ document.addEventListener('DOMContentLoaded', function() {
                 formGrade.textContent = grade;
                 formGrade.className = `status-value form-grade grade-${grade.toLowerCase()}`;
             }
+
+            if (data.fatigue_score !== undefined) {
+                updateFatigueDisplay(data);
+            }
+
+            if (data.facial_fatigue_score !== undefined || data.face_detected !== undefined) {
+                updateFacialFatigueDisplay(data);
+            }
         })
         .catch(error => {
             console.error('Error checking status:', error);
         });
     }
     
+    function updateFatigueDisplay(data) {
+        const score = data.fatigue_score ?? 100;
+        const level = (data.fatigue_level || 'fresh').replace(/_/g, ' ');
+        fatigueScore.textContent = `${score}%`;
+        fatigueLevel.textContent = level;
+        fatigueScore.className = `status-value fatigue-score level-${data.fatigue_level || 'fresh'}`;
+        fatigueLevel.className = `status-value fatigue-level level-${data.fatigue_level || 'fresh'}`;
+
+        const signals = data.fatigue_signals || data.signals || {};
+        if (signals.velocity) {
+            fatigueSignals.classList.remove('hidden');
+            sigVelocity.textContent = `${Math.round(signals.velocity.ratio * 100)}%`;
+            sigRom.textContent = `${Math.round((signals.rom?.ratio || 1) * 100)}%`;
+            sigShakiness.textContent = `${Math.round((signals.shakiness?.ratio || 1) * 100)}%`;
+            sigPause.textContent = `${Math.round((signals.pause?.ratio || 1) * 100)}%`;
+        } else if (signals.reps_needed) {
+            fatigueSignals.classList.remove('hidden');
+            sigVelocity.textContent = '…';
+            sigRom.textContent = '…';
+            sigShakiness.textContent = data.live_shakiness != null ? String(data.live_shakiness) : '…';
+            sigPause.textContent = '…';
+        }
+
+        const messages = data.fatigue_messages || data.messages || [];
+        if (messages.length) {
+            fatigueMessages.classList.remove('hidden');
+            fatigueMessages.innerHTML = messages
+                .map(m => `<p class="fatigue-msg">${m}</p>`)
+                .join('');
+        } else {
+            fatigueMessages.classList.add('hidden');
+            fatigueMessages.innerHTML = '';
+        }
+    }
+
+    function updateFacialFatigueDisplay(data) {
+        const score = data.facial_fatigue_score ?? 100;
+        const level = (data.facial_fatigue_level || 'fresh').replace(/_/g, ' ');
+        facialFatigueScore.textContent = `${score}%`;
+        facialFatigueLevel.textContent = level;
+        facialFatigueScore.className = `status-value facial-fatigue-score level-${data.facial_fatigue_level || 'fresh'}`;
+        facialFatigueLevel.className = `status-value facial-fatigue-level level-${data.facial_fatigue_level || 'fresh'}`;
+
+        if (faceTracking) {
+            if (data.face_tracking) {
+                faceTracking.textContent = 'Locked';
+                faceTracking.style.color = '#27ae60';
+            } else if (data.face_detected === false) {
+                faceTracking.textContent = 'Searching';
+                faceTracking.style.color = '#e67e22';
+            } else {
+                faceTracking.textContent = '--';
+                faceTracking.style.color = '';
+            }
+        }
+
+        const signals = data.facial_signals || {};
+        if (signals.ear) {
+            facialSignals.classList.remove('hidden');
+            sigEar.textContent = `${Math.round((signals.ear.ratio || 1) * 100)}%`;
+            sigMouth.textContent = `${Math.round((signals.mouth?.ratio || 1) * 100)}%`;
+            sigBlink.textContent = signals.blink_rate_per_min != null ? String(signals.blink_rate_per_min) : '--';
+            sigHead.textContent = `${Math.round((signals.head_ratio || 1) * 100)}%`;
+        }
+
+        const messages = data.facial_messages || [];
+        if (messages.length) {
+            facialMessages.classList.remove('hidden');
+            facialMessages.innerHTML = messages.map(m => `<p class="fatigue-msg facial-msg">${m}</p>`).join('');
+        } else {
+            facialMessages.classList.add('hidden');
+            facialMessages.innerHTML = '';
+        }
+    }
+
+    function resetFacialUI() {
+        if (!facialFatigueScore) return;
+        facialFatigueScore.textContent = '--';
+        facialFatigueLevel.textContent = '--';
+        if (faceTracking) faceTracking.textContent = '--';
+        facialSignals.classList.add('hidden');
+        facialMessages.classList.add('hidden');
+        facialMessages.innerHTML = '';
+    }
+
     // Get grade from score
     function getGrade(score) {
         if (score >= 90) return 'A';
@@ -337,6 +553,14 @@ document.addEventListener('DOMContentLoaded', function() {
         formScore.textContent = '--';
         formGrade.textContent = '--';
         formGrade.className = 'status-value form-grade';
+        fatigueScore.textContent = '--';
+        fatigueLevel.textContent = '--';
+        fatigueScore.className = 'status-value fatigue-score';
+        fatigueLevel.className = 'status-value fatigue-level';
+        fatigueSignals.classList.add('hidden');
+        fatigueMessages.classList.add('hidden');
+        fatigueMessages.innerHTML = '';
+        resetFacialUI();
     }
     
     // Initialize

@@ -29,6 +29,7 @@ try:
     from exercises.engine import ExerciseEngine
     from exercises.loader import get_available_exercises, get_exercise_info
     from utils.draw_text_with_background import draw_text_with_background
+    from face_estimation.face_tracker import FaceTracker
     logger.info("Successfully imported pose estimation modules")
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
@@ -66,7 +67,15 @@ app.secret_key = 'fitness_trainer_secret_key'  # Required for sessions
 # Global variables
 camera = None
 output_frame = None
+latest_raw_frame = None
+latest_pose_landmarks = None
 lock = threading.Lock()
+frame_lock = threading.Lock()
+
+# Face tracking panel
+_face_tracker = None
+_face_tracker_lock = threading.Lock()
+_facial_status = {}
 exercise_running = False
 exercise_engine = ExerciseEngine()  # NEW: Global exercise engine
 current_exercise_type = None
@@ -89,29 +98,110 @@ video_analyses = {}  # Store ongoing video analyses
 MAX_VIDEO_SIZE_MB = 50  # Max 50MB video
 MAX_VIDEO_DURATION_SEC = 120  # Max 2 minutes
 
-def initialize_camera():
+_camera_init_lock = threading.Lock()
+
+
+def _encode_placeholder_frame(message: str, size=(640, 480)) -> bytes:
+    """JPEG bytes for streams when the camera is unavailable."""
+    w, h = size
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:] = (36, 32, 48)
+    for i, line in enumerate(message.split("\n")[:4]):
+        cv2.putText(
+            img, line, (24, 80 + i * 36),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 230), 2,
+        )
+    ret, buffer = cv2.imencode('.jpg', img)
+    if not ret:
+        return b''
+    return buffer.tobytes()
+
+
+def initialize_camera(force_retry: bool = False) -> bool:
+    """
+    Open webcam once (thread-safe). Tries several backends and device indices.
+    Returns True if a frame can be read.
+    """
     global camera
-    if camera is None:
-        try:
-            print("[INFO] Attempting to initialize camera...")
-            camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Use DirectShow backend for better compatibility
-            if not camera.isOpened():
-                raise Exception("Camera could not be opened. Please check your device.")
-            # Optimize camera settings
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            camera.set(cv2.CAP_PROP_FPS, 30)
-            print("[INFO] Camera initialized successfully.")
-        except Exception as e:
-            print(f"[ERROR] Failed to initialize camera: {e}")
+    with _camera_init_lock:
+        if not force_retry and camera is not None and camera.isOpened():
+            return True
+        if camera is not None:
+            try:
+                camera.release()
+            except Exception:
+                pass
             camera = None
-    return camera
+
+        attempts = [
+            (0, cv2.CAP_DSHOW),
+            (0, cv2.CAP_MSMF),
+            (0, cv2.CAP_ANY),
+            (1, cv2.CAP_DSHOW),
+            (1, cv2.CAP_ANY),
+        ]
+        last_error = "no device found"
+
+        for index, backend in attempts:
+            cap = None
+            try:
+                print(f"[INFO] Trying camera index {index}, backend {backend}...")
+                cap = cv2.VideoCapture(index, backend)
+                if not cap.isOpened():
+                    last_error = f"index {index} backend {backend} not opened"
+                    cap.release()
+                    continue
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                # Warm-up reads — first frames are often black on Windows
+                for _ in range(5):
+                    cap.read()
+                    time.sleep(0.05)
+                success, test_frame = cap.read()
+                if not success or test_frame is None:
+                    last_error = f"index {index} could not read frame"
+                    cap.release()
+                    continue
+                camera = cap
+                print(f"[INFO] Camera ready (index {index}, backend {backend}).")
+                return True
+            except Exception as e:
+                last_error = str(e)
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+
+        print(f"[ERROR] Failed to initialize camera: {last_error}")
+        camera = None
+        return False
+
+
+def read_camera_frame():
+    """Thread-safe camera read. Returns (success, frame)."""
+    global camera
+    if camera is None or not camera.isOpened():
+        if not initialize_camera():
+            return False, None
+    with lock:
+        if camera is None:
+            return False, None
+        return camera.read()
+
 
 def release_camera():
-    global camera
-    if camera is not None:
-        camera.release()
-        camera = None
+    global camera, latest_raw_frame
+    with _camera_init_lock:
+        if camera is not None:
+            try:
+                camera.release()
+            except Exception:
+                pass
+            camera = None
+    with frame_lock:
+        latest_raw_frame = None
 
 # Global pose estimator - ONLY ONE instance, created lazily when needed
 _pose_estimator = None
@@ -125,38 +215,44 @@ def get_pose_estimator():
             _pose_estimator = PoseEstimator()
         return _pose_estimator
 
+
+def get_face_tracker():
+    """Get or create the FaceTracker instance."""
+    global _face_tracker
+    with _face_tracker_lock:
+        if _face_tracker is None:
+            _face_tracker = FaceTracker()
+        return _face_tracker
+
+
 def generate_frames():
     global output_frame, lock, exercise_running, exercise_engine
     global exercise_goal, sets_completed, sets_goal
-    global fps_counter, fps_start_time, current_fps
+    global fps_counter, fps_start_time, current_fps, latest_raw_frame, latest_pose_landmarks
 
     # NO PoseEstimator here - only create when exercise starts
     pose_estimator = None
 
-    # Initialize camera when video feed starts
-    if not initialize_camera():
-        print("[ERROR] Camera initialization failed. Exiting frame generation.")
-        return
+    placeholder = _encode_placeholder_frame(
+        "Camera unavailable\nClose other apps using the webcam\nClick Start Cameras again"
+    )
+    last_init_attempt = 0.0
 
     while True:
-        if camera is None:
-            if not initialize_camera():
-                time.sleep(0.1)
-                continue
+        success, frame = read_camera_frame()
+        if not success or frame is None:
+            now = time.time()
+            if now - last_init_attempt > 2.0:
+                initialize_camera(force_retry=True)
+                last_init_attempt = now
+            if placeholder:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + placeholder + b'\r\n')
+            time.sleep(0.2)
+            continue
 
-        success, frame = camera.read()
-        if not success:
-            print("[WARNING] Failed to read frame from camera. Retrying...")
-            retry_count = 0
-            while retry_count < 3 and not success:
-                time.sleep(0.1)  # Short delay before retry
-                success, frame = camera.read()
-                retry_count += 1
-                print(f"[DEBUG] Retry {retry_count}: Frame read {'successful' if success else 'failed'}.)")
-
-            if not success:
-                print("[ERROR] Unable to read frame after multiple retries. Check camera connection.")
-                break
+        with frame_lock:
+            latest_raw_frame = frame.copy()
 
         # FPS calculation
         fps_counter += 1
@@ -166,15 +262,21 @@ def generate_frames():
             fps_counter = 0
             fps_start_time = time.time()
 
-        # Only process frames if an exercise is running
+        # Pose estimation (also feeds face panel head tracking when idle)
+        if pose_estimator is None:
+            pose_estimator = get_pose_estimator()
+        pose_exercise = (
+            exercise_engine.exercise_name
+            if exercise_running and exercise_engine.exercise
+            else "squat"
+        )
+        results = pose_estimator.estimate_pose(frame, pose_exercise)
+        if results.pose_landmarks:
+            with frame_lock:
+                latest_pose_landmarks = results.pose_landmarks.landmark
+
+        # Only process exercise logic when a workout is running
         if exercise_running and exercise_engine.exercise:
-            # Lazy load pose estimator only when needed
-            if pose_estimator is None:
-                pose_estimator = get_pose_estimator()
-
-            # Process with pose estimation
-            results = pose_estimator.estimate_pose(frame, exercise_engine.exercise_name)
-
             if results.pose_landmarks:
                 # NEW: Use Exercise Engine to process frame
                 result = exercise_engine.process_frame(frame, results.pose_landmarks.landmark)
@@ -185,6 +287,7 @@ def generate_frames():
 
                     # Draw Form Score
                     exercise_engine.draw_form_score(frame)
+                    exercise_engine.draw_fatigue_overlay(frame)
 
                     # Check if rep goal is reached for current set
                     current_counter = exercise_engine.get_counter()
@@ -227,6 +330,55 @@ def generate_frames():
         frame = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+
+
+def generate_face_frames():
+    """Face panel stream: track face, zoom crop, facial fatigue HUD."""
+    global latest_raw_frame, latest_pose_landmarks, _facial_status
+
+    tracker = get_face_tracker()
+    placeholder = _encode_placeholder_frame(
+        "Waiting for camera...\nStart body camera first",
+        size=(480, 480),
+    )
+    last_init_attempt = 0.0
+
+    while True:
+        frame = None
+        pose_lm = None
+        with frame_lock:
+            if latest_raw_frame is not None:
+                frame = latest_raw_frame.copy()
+            if latest_pose_landmarks is not None:
+                pose_lm = latest_pose_landmarks
+
+        if frame is None:
+            now = time.time()
+            if now - last_init_attempt > 2.0:
+                read_camera_frame()
+                last_init_attempt = now
+            if placeholder:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + placeholder + b'\r\n')
+            time.sleep(0.1)
+            continue
+
+        try:
+            face_view, status = tracker.process_frame(frame, pose_landmarks=pose_lm)
+        except Exception as e:
+            logger.error(f"Face processing error: {e}")
+            traceback.print_exc()
+            time.sleep(0.05)
+            continue
+        _facial_status = status
+
+        ret, buffer = cv2.imencode('.jpg', face_view)
+        if not ret:
+            continue
+        chunk = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + chunk + b'\r\n')
+
 
 @app.route('/')
 def index():
@@ -274,17 +426,40 @@ def dashboard():
         traceback.print_exc()
         return f"Error loading dashboard: {str(e)}", 500
 
+@app.route('/start_camera', methods=['POST'])
+def start_camera_route():
+    """Pre-open camera before MJPEG streams connect (avoids double-init race)."""
+    ok = initialize_camera()
+    return jsonify({
+        'success': ok,
+        'error': None if ok else 'Could not open webcam. Close Zoom/Teams/Camera app and try again.',
+    })
+
+
 @app.route('/video_feed')
 def video_feed():
     """Video streaming route"""
     return Response(generate_frames(),
                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
+
+@app.route('/face_feed')
+def face_feed():
+    """Face-tracking zoom stream with facial fatigue overlay."""
+    return Response(generate_face_frames(),
+                   mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
 @app.route('/stop_camera', methods=['POST'])
 def stop_camera():
     """Stop and release camera"""
-    global exercise_running
+    global exercise_running, latest_raw_frame, latest_pose_landmarks, _facial_status
     exercise_running = False
+    latest_raw_frame = None
+    latest_pose_landmarks = None
+    _facial_status = {}
+    tracker = get_face_tracker()
+    tracker.reset()
     release_camera()
     logger.info("Camera stopped and released")
     return jsonify({'success': True})
@@ -307,6 +482,7 @@ def start_exercise():
     # Reset counters
     sets_completed = 0
     workout_start_time = time.time()
+    get_face_tracker().reset()
     
     # NEW: Use Exercise Engine to load exercise from YAML
     available = get_available_exercises()
@@ -376,6 +552,19 @@ def get_status():
         status['form_score'] = ex_status.get('form_score', 100)
         status['avg_form_score'] = ex_status.get('avg_form_score', 100)
         status['form_grade'] = ex_status.get('form_grade', 'A')
+        status['fatigue_score'] = ex_status.get('fatigue_score', 100)
+        status['fatigue_level'] = ex_status.get('fatigue_level', 'fresh')
+        status['fatigue_signals'] = ex_status.get('signals', {})
+        status['fatigue_messages'] = ex_status.get('messages', [])
+        status['live_shakiness'] = ex_status.get('live_shakiness', 0)
+
+    if _facial_status:
+        status['facial_fatigue_score'] = _facial_status.get('facial_fatigue_score', 100)
+        status['facial_fatigue_level'] = _facial_status.get('facial_fatigue_level', 'fresh')
+        status['facial_signals'] = _facial_status.get('facial_signals', {})
+        status['facial_messages'] = _facial_status.get('facial_messages', [])
+        status['face_detected'] = _facial_status.get('face_detected', False)
+        status['face_tracking'] = _facial_status.get('tracking', False)
     
     return jsonify(status)
 

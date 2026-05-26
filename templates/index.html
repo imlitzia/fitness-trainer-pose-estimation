@@ -19,15 +19,30 @@
         </header>
         
         <div class="main-content">
-            <div class="video-container">
-                <div id="video-placeholder" class="video-placeholder">
-                    <div class="placeholder-content">
-                        <div class="placeholder-icon">📹</div>
-                        <p>Click to start camera</p>
-                        <button id="start-camera-btn" class="btn primary-btn">Start Camera</button>
+            <div class="camera-panels">
+                <div class="video-container body-panel">
+                    <h3 class="panel-title">Body Tracking</h3>
+                    <div id="video-placeholder" class="video-placeholder">
+                        <div class="placeholder-content">
+                            <div class="placeholder-icon">📹</div>
+                            <p>Full-body pose tracking</p>
+                            <button id="start-camera-btn" class="btn primary-btn">Start Cameras</button>
+                        </div>
                     </div>
+                    <img id="video" src="" alt="Fitness Tracker Video Feed" style="display: none;">
                 </div>
-                <img id="video" src="" alt="Fitness Tracker Video Feed" style="display: none;">
+
+                <div class="video-container face-panel">
+                    <h3 class="panel-title">Facial Fatigue</h3>
+                    <div id="face-placeholder" class="video-placeholder">
+                        <div class="placeholder-content">
+                            <div class="placeholder-icon">🙂</div>
+                            <p>Face track + zoom</p>
+                            <p class="placeholder-hint">Starts with body camera</p>
+                        </div>
+                    </div>
+                    <img id="face-video" src="" alt="Face Tracking Feed" style="display: none;">
+                </div>
             </div>
             
             <div class="controls">
@@ -100,7 +115,47 @@
                             <span class="status-label">Grade:</span>
                             <span id="form-grade" class="status-value form-grade">--</span>
                         </div>
+                        <div class="status-item">
+                            <span class="status-label">Fatigue:</span>
+                            <span id="fatigue-score" class="status-value fatigue-score">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Fatigue Level:</span>
+                            <span id="fatigue-level" class="status-value fatigue-level">--</span>
+                        </div>
                     </div>
+                    <div id="fatigue-signals" class="fatigue-signals hidden">
+                        <div class="fatigue-signal"><span>Rep velocity</span><span id="sig-velocity">--</span></div>
+                        <div class="fatigue-signal"><span>ROM</span><span id="sig-rom">--</span></div>
+                        <div class="fatigue-signal"><span>Shakiness</span><span id="sig-shakiness">--</span></div>
+                        <div class="fatigue-signal"><span>Rep pause</span><span id="sig-pause">--</span></div>
+                    </div>
+                    <div id="fatigue-messages" class="fatigue-messages hidden"></div>
+                </div>
+
+                <div class="workout-status facial-status">
+                    <h2>Facial Fatigue</h2>
+                    <div class="status-display">
+                        <div class="status-item">
+                            <span class="status-label">Face Score:</span>
+                            <span id="facial-fatigue-score" class="status-value facial-fatigue-score">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Face Level:</span>
+                            <span id="facial-fatigue-level" class="status-value facial-fatigue-level">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Tracking:</span>
+                            <span id="face-tracking" class="status-value">--</span>
+                        </div>
+                    </div>
+                    <div id="facial-signals" class="fatigue-signals hidden">
+                        <div class="fatigue-signal"><span>Eyes (EAR)</span><span id="sig-ear">--</span></div>
+                        <div class="fatigue-signal"><span>Mouth (yawn)</span><span id="sig-mouth">--</span></div>
+                        <div class="fatigue-signal"><span>Blink / min</span><span id="sig-blink">--</span></div>
+                        <div class="fatigue-signal"><span>Head stability</span><span id="sig-head">--</span></div>
+                    </div>
+                    <div id="facial-messages" class="fatigue-messages hidden"></div>
                 </div>
             </div>
         </div>

@@ -16,6 +16,8 @@ import numpy as np
 import time
 from typing import Dict, List, Optional, Tuple, Any
 
+from exercises.fatigue_detector import FatigueDetector
+
 
 class BaseExercise:
     """
@@ -115,6 +117,14 @@ class BaseExercise:
         
         # Feedback penalty tracking
         self.active_feedback_count = 0
+
+        # Real-time fatigue detection
+        fatigue_cfg = config.get("fatigue_detection", {})
+        primary_key = fatigue_cfg.get("primary_angle", "primary")
+        if primary_key not in self.angles and self.angles:
+            primary_key = next(iter(self.angles.keys()))
+        self.fatigue_detector = FatigueDetector(primary_angle_key=primary_key)
+        self._fatigue_primary_key = primary_key
         
     def get_landmark_coords(self, landmarks, point_name: str, frame_shape: Tuple[int, int]) -> Tuple[int, int]:
         """
@@ -384,12 +394,14 @@ class BaseExercise:
     def start_rep_tracking(self):
         """Rep başlangıç zamanını kaydet."""
         self.rep_start_time = time.time()
+        self.fatigue_detector.start_rep(self.rep_start_time)
     
     def end_rep_tracking(self):
         """Rep süresini kaydet ve form score'u güncelle."""
         if self.rep_start_time:
             duration = time.time() - self.rep_start_time
             self.rep_durations.append(duration)
+            self.fatigue_detector.complete_rep(duration)
             self.rep_start_time = None
             
             # Son rep'in form score'unu kaydet
@@ -398,6 +410,12 @@ class BaseExercise:
             # Ortalama form score'u güncelle
             if self.rep_form_scores:
                 self.avg_form_score = int(sum(self.rep_form_scores) / len(self.rep_form_scores))
+
+    def update_fatigue_frame(self, in_movement: bool = True):
+        """Feed primary angle into fatigue detector each frame."""
+        angle = self._computed_angles.get(self._fatigue_primary_key)
+        if angle is not None:
+            self.fatigue_detector.update_frame(angle, in_movement=in_movement)
     
     def get_form_score_grade(self, score: int = None) -> str:
         """Form score'dan harf notu al."""
@@ -448,6 +466,7 @@ class BaseExercise:
         self.current_form_score = 100
         self.avg_form_score = 100
         self.active_feedback_count = 0
+        self.fatigue_detector.reset()
     
     def get_status(self) -> Dict[str, Any]:
         """Mevcut durumu döndür."""
@@ -460,7 +479,8 @@ class BaseExercise:
             "is_calibrated": self.is_calibrated,
             "form_score": self.current_form_score,
             "avg_form_score": self.avg_form_score,
-            "form_grade": self.get_form_score_grade()
+            "form_grade": self.get_form_score_grade(),
+            **self.fatigue_detector.get_status(),
         }
     
     # ==================== Private Methods ====================

@@ -76,7 +76,7 @@ min_rep_duration: 0.8
 # Form geri bildirimleri
 feedback:
   too_fast:
-    condition: "angle < 40"
+    condition: "angle_min < 40"
     message: "Good squeeze! Hold briefly at the top."
     severity: info
   

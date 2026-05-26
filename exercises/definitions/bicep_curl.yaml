@@ -58,7 +58,7 @@ min_rep_duration: 0.8
 # Form geri bildirimleri
 feedback:
   partial_rep:
-    condition: "angle > 60"
+    condition: "angle > 60 or angle_min > 60"
     message: "Squeeze more at the top!"
     severity: info
 

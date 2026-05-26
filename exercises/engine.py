@@ -10,6 +10,7 @@ import numpy as np
 from typing import Dict, Optional, Tuple, List, Any
 
 from exercises.base_exercise import BaseExercise, BilateralExercise, DurationExercise
+from exercises.fatigue_detector import FatigueDetector
 from exercises.loader import load_exercise, get_exercise_info, get_available_exercises
 from utils.draw_text_with_background import draw_text_with_background
 
@@ -126,6 +127,10 @@ class ExerciseEngine:
         
         # Feedback kontrol
         feedback = self.exercise.check_feedback(context)
+
+        rest_states = {"start", "flex"}
+        in_movement = self.exercise.current_state not in (None,) + tuple(rest_states)
+        self.exercise.update_fatigue_frame(in_movement=in_movement)
         
         # FORM SCORE hesapla
         form_score = self.exercise.calculate_form_score(context, feedback)
@@ -133,6 +138,8 @@ class ExerciseEngine:
         # Rep tamamlandıysa tracking bitir
         if counted:
             self.exercise.end_rep_tracking()
+        
+        fatigue_status = self.exercise.fatigue_detector.get_status()
         
         # Sonuçları doldur
         result.update({
@@ -143,7 +150,8 @@ class ExerciseEngine:
             "counted": counted,
             "form_score": form_score,
             "avg_form_score": self.exercise.avg_form_score,
-            "form_grade": self.exercise.get_form_score_grade()
+            "form_grade": self.exercise.get_form_score_grade(),
+            **fatigue_status,
         })
         
         return result
@@ -159,17 +167,53 @@ class ExerciseEngine:
         context = exercise.get_context(landmarks, frame_shape)
         context["left_angle"] = exercise._computed_angles.get("left_angle", 0)
         context["right_angle"] = exercise._computed_angles.get("right_angle", 0)
+        la = context.get("left_angle", 0)
+        ra = context.get("right_angle", 0)
+        context["angle"] = max(la, ra)
+        context["angle_min"] = min(la, ra) if la and ra else min(la, ra)
         
         # Her iki taraf için state güncelle
         exercise.update_bilateral_state(context)
         
         # Sayaçları güncelle
         left_counted, right_counted = exercise.update_bilateral_counter()
+
+        rest_states = {"start", "flex"}
+        prev_left = exercise.prev_state_left
+        prev_right = exercise.prev_state_right
+        left_started = (
+            (prev_left in rest_states or prev_left is None)
+            and exercise.current_state_left
+            and exercise.current_state_left not in rest_states
+        )
+        right_started = (
+            (prev_right in rest_states or prev_right is None)
+            and exercise.current_state_right
+            and exercise.current_state_right not in rest_states
+        )
+        if left_started or right_started:
+            exercise.start_rep_tracking()
+
+        primary_angle = (
+            (context.get("left_angle", 0) + context.get("right_angle", 0)) / 2
+        )
+        if primary_angle:
+            exercise._computed_angles[exercise._fatigue_primary_key] = primary_angle
+        in_movement = (
+            exercise.current_state_left not in (None,) + tuple(rest_states)
+            or exercise.current_state_right not in (None,) + tuple(rest_states)
+        )
+        exercise.update_fatigue_frame(in_movement=in_movement)
+
+        if left_counted or right_counted:
+            exercise.end_rep_tracking()
         
         # Feedback kontrol
         context["counter_left"] = exercise.counter_left
         context["counter_right"] = exercise.counter_right
         feedback = exercise.check_feedback(context)
+        form_score = exercise.calculate_form_score(context, feedback)
+        fatigue_status = exercise.fatigue_detector.get_status()
         
         # Sonuçları doldur
         result.update({
@@ -180,7 +224,11 @@ class ExerciseEngine:
             "state_right": exercise.current_state_right,
             "angles": exercise._computed_angles.copy(),
             "feedback": feedback,
-            "counted": left_counted or right_counted
+            "counted": left_counted or right_counted,
+            "form_score": form_score,
+            "avg_form_score": exercise.avg_form_score,
+            "form_grade": exercise.get_form_score_grade(),
+            **fatigue_status,
         })
         
         return result
@@ -415,6 +463,54 @@ class ExerciseEngine:
         # Dolu kısım
         fill_width = int((score / 100) * bar_width)
         cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_width, bar_y + bar_height), color, -1)
+
+    def draw_fatigue_overlay(self, frame):
+        """Draw real-time fatigue score and active warnings on frame."""
+        if not self.exercise or not hasattr(self.exercise, "fatigue_detector"):
+            return
+
+        fd = self.exercise.fatigue_detector
+        status = fd.get_status()
+        score = status.get("fatigue_score", 100)
+        level = status.get("fatigue_level", "fresh")
+        color = fd.get_overlay_color_bgr()
+
+        h, w = frame.shape[:2]
+        x_pos = 20
+        y_pos = h - 120
+
+        cv2.rectangle(frame, (x_pos - 8, y_pos - 28), (x_pos + 280, y_pos + 75), (40, 40, 40), -1)
+        cv2.rectangle(frame, (x_pos - 8, y_pos - 28), (x_pos + 280, y_pos + 75), color, 2)
+
+        level_label = level.replace("_", " ").title()
+        cv2.putText(
+            frame, f"FATIGUE: {score}% ({level_label})",
+            (x_pos, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2,
+        )
+
+        signals = status.get("signals") or {}
+        if isinstance(signals, dict) and "velocity" in signals:
+            vel = signals["velocity"]
+            rom = signals.get("rom", {})
+            line2 = f"Vel {vel.get('ratio', 1):.0%} | ROM {rom.get('ratio', 1):.0%}"
+            cv2.putText(frame, line2, (x_pos, y_pos + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+            shake = signals.get("shakiness", {})
+            pause = signals.get("pause", {})
+            line3 = f"Shake {shake.get('ratio', 1):.0%} | Pause {pause.get('ratio', 1):.0%}"
+            cv2.putText(frame, line3, (x_pos, y_pos + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+        elif status.get("reps_analyzed", 0) < FatigueDetector.MIN_REPS_FOR_ANALYSIS:
+            cv2.putText(
+                frame,
+                f"Baseline: {status.get('reps_analyzed', 0)}/{FatigueDetector.MIN_REPS_FOR_ANALYSIS} reps",
+                (x_pos, y_pos + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1,
+            )
+
+        messages = status.get("messages") or []
+        if messages:
+            draw_text_with_background(
+                frame, messages[0], (x_pos, y_pos + 68),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), (60, 60, 120), 1,
+            )
     
     def get_counter(self) -> int:
         """Mevcut sayacı al."""
