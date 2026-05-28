@@ -278,8 +278,8 @@ def generate_frames():
         # Only process exercise logic when a workout is running
         if exercise_running and exercise_engine.exercise:
             if results.pose_landmarks:
-                # NEW: Use Exercise Engine to process frame
-                result = exercise_engine.process_frame(frame, results.pose_landmarks.landmark)
+                # NEW: Use Exercise Engine to process frame with facial status
+                result = exercise_engine.process_frame(frame, results.pose_landmarks.landmark, _facial_status)
 
                 if result["success"]:
                     # Draw status overlay

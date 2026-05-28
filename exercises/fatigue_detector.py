@@ -25,10 +25,14 @@ class FatigueDetector:
         primary_angle_key: str = "primary",
         baseline_reps: int = 2,
         comparison_reps: int = 3,
+        use_facial_fatigue: bool = True,
+        facial_weight: float = 0.3,
     ):
         self.primary_angle_key = primary_angle_key
         self.baseline_reps = baseline_reps
         self.comparison_reps = comparison_reps
+        self.use_facial_fatigue = use_facial_fatigue
+        self.facial_weight = facial_weight
 
         self._frame_buffer: Deque[Tuple[float, float]] = deque(maxlen=30)
         self._rep_active = False
@@ -46,6 +50,13 @@ class FatigueDetector:
         self._signals: Dict[str, Any] = {}
         self._messages: List[str] = []
 
+        # Facial fatigue integration
+        self._facial_fatigue_score = 100
+        self._facial_fatigue_level = "fresh"
+        self._facial_signals: Dict[str, Any] = {}
+        self._facial_messages: List[str] = []
+        self._face_detected = False
+
     def reset(self):
         """Clear all session metrics."""
         self._frame_buffer.clear()
@@ -61,6 +72,12 @@ class FatigueDetector:
         self._fatigue_level = "fresh"
         self._signals = {}
         self._messages = []
+        # Reset facial fatigue
+        self._facial_fatigue_score = 100
+        self._facial_fatigue_level = "fresh"
+        self._facial_signals = {}
+        self._facial_messages = []
+        self._face_detected = False
 
     def start_rep(self, timestamp: Optional[float] = None):
         """Mark the beginning of a new repetition."""
@@ -154,8 +171,28 @@ class FatigueDetector:
 
         self._update_fatigue_assessment()
 
+    def update_facial_fatigue(self, facial_status: Dict[str, Any]):
+        """
+        Update facial fatigue data from face tracker.
+
+        Args:
+            facial_status: Status dict from FacialFatigueDetector.get_status()
+        """
+        if not self.use_facial_fatigue:
+            return
+
+        self._facial_fatigue_score = facial_status.get("facial_fatigue_score", 100)
+        self._facial_fatigue_level = facial_status.get("facial_fatigue_level", "fresh")
+        self._facial_signals = facial_status.get("facial_signals", {})
+        self._facial_messages = facial_status.get("facial_messages", [])
+        self._face_detected = facial_status.get("face_detected", False)
+
+        # Recompute combined fatigue score if we have movement data
+        if len(self._completed_reps) >= self.MIN_REPS_FOR_ANALYSIS:
+            self._update_fatigue_assessment()
+
     def _update_fatigue_assessment(self):
-        """Recompute composite fatigue score from completed reps."""
+        """Recompute composite fatigue score from completed reps and facial data."""
         n = len(self._completed_reps)
         if n < self.MIN_REPS_FOR_ANALYSIS:
             self._fatigue_score = 100
@@ -195,9 +232,21 @@ class FatigueDetector:
             pause_ratio, good=1.0, warn=1.35, bad=1.8, higher_is_better=False
         )
 
-        self._fatigue_score = int(
+        # Movement-based fatigue score
+        movement_score = int(
             0.30 * vel_score + 0.30 * rom_score + 0.20 * shake_score + 0.20 * pause_score
         )
+
+        # Combine with facial fatigue if enabled and face is detected
+        if self.use_facial_fatigue and self._face_detected:
+            # Weighted combination: movement score + facial score
+            combined_score = int(
+                (1 - self.facial_weight) * movement_score + self.facial_weight * self._facial_fatigue_score
+            )
+            self._fatigue_score = combined_score
+        else:
+            self._fatigue_score = movement_score
+
         self._fatigue_level = _score_to_level(self._fatigue_score)
 
         self._signals = {
@@ -228,9 +277,26 @@ class FatigueDetector:
                 "score": pause_score,
             },
         }
+
+        # Add facial signals if available
+        if self.use_facial_fatigue:
+            self._signals["facial"] = {
+                "score": self._facial_fatigue_score,
+                "level": self._facial_fatigue_level,
+                "face_detected": self._face_detected,
+                "weight": self.facial_weight,
+                "movement_score": movement_score,
+            }
+            self._signals["facial"].update(self._facial_signals)
+
         self._messages = _build_messages(
             vel_ratio, rom_ratio, shake_ratio, pause_ratio, self._fatigue_level
         )
+
+        # Add facial messages if available
+        if self.use_facial_fatigue and self._face_detected:
+            self._messages.extend(self._facial_messages)
+            self._messages = self._messages[:3]  # Keep only top 3 messages
 
     def get_status(self) -> Dict[str, Any]:
         """Current fatigue assessment for API and UI."""

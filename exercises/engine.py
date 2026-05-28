@@ -56,13 +56,14 @@ class ExerciseEngine:
         if self.exercise:
             self.exercise.reset()
     
-    def process_frame(self, frame: np.ndarray, landmarks) -> Dict[str, Any]:
+    def process_frame(self, frame: np.ndarray, landmarks, facial_status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Frame'i işle ve egzersiz verilerini güncelle.
         
         Args:
             frame: OpenCV frame (BGR)
             landmarks: MediaPipe pose landmarks
+            facial_status: Optional facial fatigue status from face tracker
             
         Returns:
             İşlem sonuçları dict'i
@@ -83,6 +84,10 @@ class ExerciseEngine:
         }
         
         try:
+            # Update facial fatigue data if provided
+            if facial_status and hasattr(self.exercise, 'fatigue_detector'):
+                self.exercise.fatigue_detector.update_facial_fatigue(facial_status)
+            
             # Bilateral (çift taraflı) egzersiz mi?
             if isinstance(self.exercise, BilateralExercise):
                 result = self._process_bilateral(frame, landmarks, frame_shape, result)
